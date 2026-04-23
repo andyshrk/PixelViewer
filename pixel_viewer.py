@@ -247,13 +247,12 @@ class PixelDecoder:
                     u = np.full((actual_h, width), 128, dtype=np.float32)
                     v = np.full((actual_h, width), 128, dtype=np.float32)
             else:  # NV24, NV42
-                uv_width = width
+                # UV plane is full-height, full-width -> no upsampling needed
                 uv_data = arr[actual_y_size:]
-                actual_uv_w = min(width, len(uv_data) // (2 * actual_h)) if actual_h > 0 else 0
-                if actual_uv_w > 0:
-                    uv = uv_data[:actual_h * actual_uv_w * 2].reshape(actual_h, actual_uv_w, 2)
-                    u = np.repeat(uv[:, :, 0], (width // actual_uv_w) + 1, axis=1)[:, :width]
-                    v = np.repeat(uv[:, :, 1], (width // actual_uv_w) + 1, axis=1)[:, :width]
+                if actual_h > 0:
+                    uv = uv_data[:actual_h * width * 2].reshape(actual_h, width, 2)
+                    u = uv[:, :, 0]
+                    v = uv[:, :, 1]
                 else:
                     u = np.full((actual_h, width), 128, dtype=np.float32)
                     v = np.full((actual_h, width), 128, dtype=np.float32)
