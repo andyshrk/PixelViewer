@@ -61,6 +61,28 @@ class YuvRangeDetector:
     """YUV 色彩范围自动检测器"""
 
     @staticmethod
+    def _uv_idx(y_idx: int, width: int, height: int, fmt: PixelFormat) -> int:
+        """计算 UV 数据的字节偏移"""
+        y_size = width * height
+        y = y_idx // width
+        x = y_idx % width
+        if fmt in [PixelFormat.NV12, PixelFormat.NV21]:
+            # UV plane: (height/2) x (width/2), interleaved UV
+            uv_w = (width + 1) // 2
+            uv_y = y // 2
+            uv_x = x // 2
+            return y_size + uv_y * uv_w * 2 + uv_x * 2
+        elif fmt in [PixelFormat.NV16, PixelFormat.NV61]:
+            # UV plane: height x (width/2), interleaved UV
+            uv_w = (width + 1) // 2
+            uv_x = x // 2
+            return y_size + y * uv_w * 2 + uv_x * 2
+        elif fmt in [PixelFormat.NV24, PixelFormat.NV42]:
+            # UV plane: height x width, interleaved UV
+            return y_size + y * width * 2 + x * 2
+        return y_size + y_idx * 2
+
+    @staticmethod
     def detect(data: bytes, width: int, height: int, fmt: PixelFormat) -> YuvRange:
         """自动检测 YUV 数据使用的色彩范围"""
         if not fmt.name.startswith('NV'):
@@ -74,47 +96,39 @@ class YuvRangeDetector:
         sample_step = max(1, y_size // 10000)
         y_min = 255
         y_max = 0
-        y_samples = []
 
         for i in range(0, min(y_size, len(data)), sample_step):
             y_val = data[i]
             y_min = min(y_min, y_val)
             y_max = max(y_max, y_val)
-            y_samples.append(y_val)
 
         # 检测逻辑
         # 1. 如果有 Y=0 且 UV 接近中性 -> Full Range
         if y_min <= 4:
             for i in range(0, min(y_size, 1000), sample_step):
                 if data[i] <= 4:
-                    uv_idx = y_size + (i // width) * ((width + 1) // 2) * 2 + (i % width) // 2 * 2
+                    uv_idx = YuvRangeDetector._uv_idx(i, width, height, fmt)
                     if uv_idx + 1 < len(data):
                         u, v = data[uv_idx], data[uv_idx + 1]
                         if abs(u - 128) <= 20 and abs(v - 128) <= 20:
                             return YuvRange.FULL
 
-        # 2. 如果 Y 值都在 16-235 范围内 -> Limited Range
-        if y_min >= 14 and y_max <= 237:
-            return YuvRange.LIMITED
-
-        # 3. 如果有接近 255 的 Y 值 -> Full Range
+        # 2. 如果有接近 255 的 Y 值 -> Full Range
         if y_max >= 250:
             return YuvRange.FULL
 
-        # 4. 默认 Full Range
+        # 3. 默认 Full Range
         return YuvRange.FULL
 
 
 class PixelDecoder:
     """像素格式解码器"""
     _yuv_range = YuvRange.LIMITED
-    _auto_detect = True  # 默认自动检测
 
     @staticmethod
     def set_yuv_range(range_mode: YuvRange):
         """设置 YUV 色彩范围"""
         PixelDecoder._yuv_range = range_mode
-        PixelDecoder._auto_detect = False
 
     @staticmethod
     def get_yuv_range() -> YuvRange:
@@ -124,10 +138,9 @@ class PixelDecoder:
     @staticmethod
     def decode(data: bytes, width: int, height: int, fmt: PixelFormat) -> QImage:
         """解码原始数据为 QImage"""
-        # 自动检测 YUV 范围
-        if PixelDecoder._auto_detect and fmt.name.startswith('NV'):
-            detected = YuvRangeDetector.detect(data, width, height, fmt)
-            PixelDecoder._yuv_range = detected
+        # 解码前自动检测 YUV 范围
+        if fmt.name.startswith('NV'):
+            PixelDecoder._yuv_range = YuvRangeDetector.detect(data, width, height, fmt)
 
         if HAS_NUMPY:
             return PixelDecoder._decode_numpy(data, width, height, fmt)
@@ -222,13 +235,14 @@ class PixelDecoder:
                     v = np.full((actual_h, width), 128, dtype=np.float32)
             elif fmt in [PixelFormat.NV16, PixelFormat.NV61]:
                 uv_width = (width + 1) // 2
-                uv_size = width * uv_width * 2
+                uv_size = height * uv_width * 2
                 uv_data = arr[actual_y_size:actual_y_size + min(uv_actual, uv_size)]
                 actual_uv_w = min(uv_width, len(uv_data) // (2 * actual_h)) if actual_h > 0 else 0
                 if actual_uv_w > 0:
                     uv = uv_data[:actual_h * actual_uv_w * 2].reshape(actual_h, actual_uv_w, 2)
-                    u = np.repeat(uv[:, :, 0], (width // actual_uv_w) + 1, axis=1)[:, :width]
-                    v = np.repeat(uv[:, :, 1], (width // actual_uv_w) + 1, axis=1)[:, :width]
+                    # NV16 UV plane is full-height, half-width -> repeat horizontally only
+                    u = np.repeat(uv[:, :, 0], 2, axis=1)[:, :width]
+                    v = np.repeat(uv[:, :, 1], 2, axis=1)[:, :width]
                 else:
                     u = np.full((actual_h, width), 128, dtype=np.float32)
                     v = np.full((actual_h, width), 128, dtype=np.float32)
@@ -566,9 +580,12 @@ class ImageTab(QWidget):
         toolbar_layout.addWidget(self.format_combo)
 
         toolbar_layout.addWidget(QLabel("Range:"))
-        self.range_label = QLabel("Auto")
-        self.range_label.setStyleSheet("color: #888888;")
-        toolbar_layout.addWidget(self.range_label)
+        self.range_combo = QComboBox()
+        self.range_combo.addItem("Full", YuvRange.FULL)
+        self.range_combo.addItem("Limited", YuvRange.LIMITED)
+        self.range_combo.setFixedWidth(80)
+        toolbar_layout.addWidget(self.range_combo)
+        self.range_combo.currentIndexChanged.connect(self._on_range_changed)
 
         toolbar_layout.addSpacing(16)
 
@@ -665,13 +682,26 @@ class ImageTab(QWidget):
         self.res_label.setText(f" {self.width}x{self.height} ")
         self.format_label.setText(f" {self.pixel_format.value} ")
         self.zoom_label.setText(f" {'1x' if self.zoom > 0 else 'Fit'} ")
-        self.range_label.setText(PixelDecoder.get_yuv_range().value)
+
+        # 同步 Range 下拉框显示检测/设置的值
+        current = self.range_combo.currentData()
+        detected = PixelDecoder.get_yuv_range()
+        # 只在需要时更新（避免触发 currentIndexChanged）
+        if detected != current:
+            idx = self.range_combo.findData(detected)
+            if idx >= 0:
+                self.range_combo.setCurrentIndex(idx)
 
     def _on_resolution_changed(self):
         self._update_display()
 
     def _on_format_changed(self, index):
         self.pixel_format = self.format_combo.currentData()
+        self._update_display()
+
+    def _on_range_changed(self, index):
+        data = self.range_combo.currentData()
+        PixelDecoder._yuv_range = data
         self._update_display()
 
     def _on_zoom_changed(self, zoom: str):
