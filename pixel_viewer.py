@@ -509,6 +509,8 @@ class ImageGraphicsView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.setBackgroundBrush(QColor("#1E1E1E"))
 
     def wheelEvent(self, event):
         """鼠标滚轮缩放"""
@@ -540,9 +542,10 @@ class ImageTab(QWidget):
         self.width = width
         self.height = height
         self.pixel_format = pixel_format
-        self.zoom = 0  # 0 = fit
+        self.zoom = 1.0
 
         self._setup_ui()
+        self._on_zoom_changed("1x")
         self._update_display()
 
     def _setup_ui(self):
@@ -589,17 +592,17 @@ class ImageTab(QWidget):
         toolbar_layout.addSpacing(16)
 
         self.zoom_group = QButtonGroup()
-        for zoom in ["1x", "2x", "4x", "8x", "Fit"]:
+        for zoom in ["1x", "1/2x", "1/4x", "1/8x"]:
             btn = QPushButton(zoom)
             btn.setCheckable(True)
-            btn.setFixedWidth(40 if zoom != "Fit" else 50)
+            btn.setFixedWidth(44)
             self.zoom_group.addButton(btn)
             btn.clicked.connect(lambda checked, z=zoom: self._on_zoom_changed(z) if checked else None)
             toolbar_layout.addWidget(btn)
 
-        # 默认选择 Fit
+        # 默认选择 1x（原始分辨率）
         for btn in self.zoom_group.buttons():
-            if btn.text() == "Fit":
+            if btn.text() == "1x":
                 btn.setChecked(True)
                 break
 
@@ -680,7 +683,7 @@ class ImageTab(QWidget):
 
         self.res_label.setText(f" {self.width}x{self.height} ")
         self.format_label.setText(f" {self.pixel_format.value} ")
-        self.zoom_label.setText(f" {'1x' if self.zoom > 0 else 'Fit'} ")
+        self.zoom_label.setText(f" {self.zoom:.2f}x ")
 
         # 同步 Range 下拉框显示检测/设置的值
         current = self.range_combo.currentData()
@@ -706,14 +709,12 @@ class ImageTab(QWidget):
     def _on_zoom_changed(self, zoom: str):
         if zoom == "1x":
             self.zoom = 1.0
-        elif zoom == "2x":
-            self.zoom = 2.0
-        elif zoom == "4x":
-            self.zoom = 4.0
-        elif zoom == "8x":
-            self.zoom = 8.0
-        else:
-            self.zoom = 0
+        elif zoom == "1/2x":
+            self.zoom = 0.5
+        elif zoom == "1/4x":
+            self.zoom = 0.25
+        elif zoom == "1/8x":
+            self.zoom = 0.125
         self._update_display()
 
     def _on_mouse_moved(self, x: int, y: int):
