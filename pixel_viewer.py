@@ -2,9 +2,11 @@
 """
 PixelViewer - 原始图像查看器
 支持 RGB888, RGB565, XRGB8888, NV12, NV21, NV16, NV61, NV24, NV42 等格式
+支持多标签页，类似 7yuv
 """
 
 import sys
+import os
 from enum import Enum
 from typing import Optional
 
@@ -18,8 +20,9 @@ try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QMenuBar, QMenu, QLabel, QLineEdit, QComboBox, QPushButton,
-        QToolBar, QStatusBar, QFileDialog, QMessageBox, QScrollArea,
+        QToolBar, QStatusBar, QFileDialog, QMessageBox,
         QButtonGroup, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+        QTabWidget, QSizePolicy
     )
     from PyQt6.QtCore import Qt, QPoint, pyqtSignal
     from PyQt6.QtGui import (
@@ -513,18 +516,213 @@ class ImageGraphicsView(QGraphicsView):
         super().leaveEvent(event)
 
 
+class ImageTab(QWidget):
+    """图像标签页"""
+
+    def __init__(self, file_path: str, file_data: bytes, width: int, height: int,
+                 pixel_format: PixelFormat, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.file_data = file_data
+        self.width = width
+        self.height = height
+        self.pixel_format = pixel_format
+        self.zoom = 0  # 0 = fit
+
+        self._setup_ui()
+        self._update_display()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 工具栏
+        toolbar = QWidget()
+        toolbar.setStyleSheet("background-color: #2D2D30;")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 4, 8, 4)
+
+        toolbar_layout.addWidget(QLabel("Width:"))
+        self.width_edit = QLineEdit(str(self.width))
+        self.width_edit.setFixedWidth(80)
+        self.width_edit.editingFinished.connect(self._on_resolution_changed)
+        toolbar_layout.addWidget(self.width_edit)
+
+        toolbar_layout.addWidget(QLabel("Height:"))
+        self.height_edit = QLineEdit(str(self.height))
+        self.height_edit.setFixedWidth(80)
+        self.height_edit.editingFinished.connect(self._on_resolution_changed)
+        toolbar_layout.addWidget(self.height_edit)
+
+        toolbar_layout.addWidget(QLabel("Format:"))
+        self.format_combo = QComboBox()
+        for fmt in PixelFormat:
+            self.format_combo.addItem(fmt.value, fmt)
+        idx = self.format_combo.findData(self.pixel_format)
+        if idx >= 0:
+            self.format_combo.setCurrentIndex(idx)
+        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+        self.format_combo.setFixedWidth(100)
+        toolbar_layout.addWidget(self.format_combo)
+
+        toolbar_layout.addWidget(QLabel("Range:"))
+        self.range_label = QLabel("Auto")
+        self.range_label.setStyleSheet("color: #888888;")
+        toolbar_layout.addWidget(self.range_label)
+
+        toolbar_layout.addSpacing(16)
+
+        self.zoom_group = QButtonGroup()
+        for zoom in ["1x", "2x", "4x", "8x", "Fit"]:
+            btn = QPushButton(zoom)
+            btn.setCheckable(True)
+            btn.setFixedWidth(40 if zoom != "Fit" else 50)
+            self.zoom_group.addButton(btn)
+            btn.clicked.connect(lambda checked, z=zoom: self._on_zoom_changed(z) if checked else None)
+            toolbar_layout.addWidget(btn)
+
+        # 默认选择 Fit
+        for btn in self.zoom_group.buttons():
+            if btn.text() == "Fit":
+                btn.setChecked(True)
+                break
+
+        toolbar_layout.addStretch()
+        layout.addWidget(toolbar)
+
+        # 图像显示区域
+        self.scene = QGraphicsScene()
+        self.view = ImageGraphicsView()
+        self.view.setScene(self.scene)
+        self.view.setBackgroundBrush(QColor("#1E1E1E"))
+        self.view.mouse_moved.connect(self._on_mouse_moved)
+        self.view.mouse_left.connect(self._on_mouse_left)
+        layout.addWidget(self.view)
+
+        # 状态栏
+        self.status_bar = QWidget()
+        self.status_bar.setStyleSheet("background-color: #2D2D30;")
+        status_layout = QHBoxLayout(self.status_bar)
+        status_layout.setContentsMargins(8, 4, 8, 4)
+
+        self.file_label = QLabel(os.path.basename(self.file_path))
+        self.res_label = QLabel("")
+        self.format_label = QLabel("")
+        self.zoom_label = QLabel("")
+        self.pos_label = QLabel("")
+        self.color_label = QLabel("")
+
+        for lbl in [self.file_label, self.res_label, self.format_label,
+                    self.zoom_label, self.pos_label, self.color_label]:
+            lbl.setStyleSheet("color: #CCCCCC;")
+            status_layout.addWidget(lbl)
+
+        status_layout.addStretch()
+        layout.addWidget(self.status_bar)
+
+    def _update_display(self):
+        try:
+            self.width = int(self.width_edit.text())
+            self.height = int(self.height_edit.text())
+        except ValueError:
+            return
+
+        required_size = PixelDecoder.get_required_size(self.width, self.height, self.pixel_format)
+        if len(self.file_data) < required_size:
+            pass  # 显示警告但不阻止
+
+        try:
+            img = PixelDecoder.decode(self.file_data, self.width, self.height, self.pixel_format)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Decode failed:\n{str(e)}")
+            return
+
+        pixmap = QPixmap.fromImage(img)
+
+        if self.zoom > 0:
+            scaled = pixmap.scaled(
+                int(self.width * self.zoom),
+                int(self.height * self.zoom),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.FastTransformation
+            )
+        else:
+            view_size = self.view.viewport().size()
+            if view_size.width() > 0 and view_size.height() > 0:
+                # Fit 模式：填满整个窗口
+                scaled = pixmap.scaled(
+                    view_size,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation
+                )
+            else:
+                scaled = pixmap
+
+        self.scene.clear()
+        self.scene.addPixmap(scaled)
+        self.view.setSceneRect(0, 0, scaled.width(), scaled.height())
+
+        self.res_label.setText(f" {self.width}x{self.height} ")
+        self.format_label.setText(f" {self.pixel_format.value} ")
+        self.zoom_label.setText(f" {'1x' if self.zoom > 0 else 'Fit'} ")
+        self.range_label.setText(PixelDecoder.get_yuv_range().value)
+
+    def _on_resolution_changed(self):
+        self._update_display()
+
+    def _on_format_changed(self, index):
+        self.pixel_format = self.format_combo.currentData()
+        self._update_display()
+
+    def _on_zoom_changed(self, zoom: str):
+        if zoom == "1x":
+            self.zoom = 1.0
+        elif zoom == "2x":
+            self.zoom = 2.0
+        elif zoom == "4x":
+            self.zoom = 4.0
+        elif zoom == "8x":
+            self.zoom = 8.0
+        else:
+            self.zoom = 0
+        self._update_display()
+
+    def _on_mouse_moved(self, x: int, y: int):
+        scale_x = self.width / self.scene.sceneRect().width() if self.scene.sceneRect().width() > 0 else 1
+        scale_y = self.height / self.scene.sceneRect().height() if self.scene.sceneRect().height() > 0 else 1
+
+        img_x = int(x * scale_x)
+        img_y = int(y * scale_y)
+
+        if 0 <= img_x < self.width and 0 <= img_y < self.height:
+            self.pos_label.setText(f" X: {img_x}, Y: {img_y} ")
+
+            if self.scene.items():
+                item = self.scene.items()[0]
+                if isinstance(item, QGraphicsPixmapItem):
+                    pixmap = item.pixmap()
+                    if not pixmap.isNull():
+                        img = pixmap.toImage()
+                        if 0 <= x < pixmap.width() and 0 <= y < pixmap.height():
+                            pixel = img.pixel(x, y)
+                            r = (pixel >> 16) & 0xFF
+                            g = (pixel >> 8) & 0xFF
+                            b = pixel & 0xFF
+                            self.color_label.setText(f" RGB: {r}, {g}, {b} ")
+        else:
+            self.pos_label.setText("")
+            self.color_label.setText("")
+
+    def _on_mouse_left(self):
+        self.pos_label.setText("")
+        self.color_label.setText("")
+
+
 class MainWindow(QMainWindow):
     """主窗口"""
 
     def __init__(self):
         super().__init__()
-        self._file_path: Optional[str] = None
-        self._file_data: Optional[bytes] = None
-        self._width = 1920
-        self._height = 1080
-        self._pixel_format = PixelFormat.NV12
-        self._zoom = 1.0
-
         self._setup_ui()
         self._setup_connections()
 
@@ -559,92 +757,34 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #4F4F53; }
             QPushButton:pressed { background-color: #007ACC; }
             QStatusBar { background-color: #2D2D30; color: #CCCCCC; }
+            QTabWidget::pane { border: 0; }
+            QTabBar::tab {
+                background-color: #2D2D30;
+                color: #CCCCCC;
+                padding: 6px 12px;
+                border: 1px solid #3F3F46;
+            }
+            QTabBar::tab:selected {
+                background-color: #007ACC;
+                color: white;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #3F3F46;
+            }
+            QTabBar::close-button {
+                image: none;
+            }
+            QTabBar::close-button:hover {
+                background-color: #555555;
+                border-radius: 2px;
+            }
         """)
 
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # 工具栏
-        toolbar = QToolBar("Toolbar")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-
-        self.open_btn = QPushButton("Open")
-        toolbar.addWidget(self.open_btn)
-        toolbar.addSeparator()
-
-        toolbar.addWidget(QLabel("Width:"))
-        self.width_edit = QLineEdit("1920")
-        self.width_edit.setFixedWidth(80)
-        toolbar.addWidget(self.width_edit)
-
-        toolbar.addWidget(QLabel("Height:"))
-        self.height_edit = QLineEdit("1080")
-        self.height_edit.setFixedWidth(80)
-        toolbar.addWidget(self.height_edit)
-
-        toolbar.addSeparator()
-
-        toolbar.addWidget(QLabel("Format:"))
-        self.format_combo = QComboBox()
-        for fmt in PixelFormat:
-            self.format_combo.addItem(fmt.value, fmt)
-        self.format_combo.setCurrentIndex(6)
-        self.format_combo.setFixedWidth(100)
-        toolbar.addWidget(self.format_combo)
-
-        toolbar.addSeparator()
-
-        self.yuv_range_label = QLabel("Range: Auto")
-        self.yuv_range_label.setStyleSheet("color: #888888;")
-        toolbar.addWidget(self.yuv_range_label)
-
-        toolbar.addSeparator()
-
-        self.zoom_group = QButtonGroup()
-        self.zoom_buttons = {}
-        for zoom in ["1x", "2x", "4x", "8x", "Fit"]:
-            btn = QPushButton(zoom)
-            btn.setCheckable(True)
-            btn.setFixedWidth(50 if zoom == "Fit" else 40)
-            self.zoom_group.addButton(btn)
-            self.zoom_buttons[zoom] = btn
-            toolbar.addWidget(btn)
-
-        self.reload_btn = QPushButton("Reload")
-        toolbar.addWidget(self.reload_btn)
-
-        # 图像显示区域
-        self.scene = QGraphicsScene()
-        self.view = ImageGraphicsView()
-        self.view.setScene(self.scene)
-        self.view.setBackgroundBrush(QColor("#1E1E1E"))
-        main_layout.addWidget(self.view)
-
-        # 状态栏
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-
-        self.file_path_label = QLabel("No file loaded")
-        self.resolution_label = QLabel("")
-        self.format_label = QLabel("")
-        self.zoom_label = QLabel("")
-        self.position_label = QLabel("")
-        self.color_label = QLabel("")
-
-        for label in [self.file_path_label, self.resolution_label, self.format_label,
-                      self.zoom_label, self.position_label, self.color_label]:
-            label.setStyleSheet("padding: 0 8px;")
-
-        self.status_bar.addWidget(self.file_path_label, 1)
-        self.status_bar.addWidget(self.resolution_label)
-        self.status_bar.addWidget(self.format_label)
-        self.status_bar.addWidget(self.zoom_label)
-        self.status_bar.addWidget(self.position_label)
-        self.status_bar.addWidget(self.color_label)
+        # 标签页容器
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self._close_tab)
+        self.setCentralWidget(self.tab_widget)
 
         # 菜单
         menubar = self.menuBar()
@@ -654,6 +794,11 @@ class MainWindow(QMainWindow):
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_file)
         file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        close_tab_action = QAction("Close Tab", self)
+        close_tab_action.setShortcut(QKeySequence.StandardKey.Close)
+        close_tab_action.triggered.connect(self._close_current_tab)
+        file_menu.addAction(close_tab_action)
         file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
@@ -673,18 +818,12 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def _setup_connections(self):
-        self.open_btn.clicked.connect(self._open_file)
-        self.reload_btn.clicked.connect(self._reload)
-        self.format_combo.currentIndexChanged.connect(self._format_changed)
-        self.zoom_group.buttonClicked.connect(self._zoom_changed)
-        self.width_edit.editingFinished.connect(self._resolution_changed)
-        self.height_edit.editingFinished.connect(self._resolution_changed)
-        self.view.mouse_moved.connect(self._mouse_moved)
-        self.view.mouse_left.connect(self._mouse_left)
+        pass
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open File", "", "All Files (*.*);;YUV Files (*.yuv;*.nv12;*.nv21)"
+            self, "Open File", "",
+            "All Files (*.*);;YUV Files (*.yuv;*.nv12;*.nv21);;Binary Files (*.bin)"
         )
         if path:
             self._load_file(path)
@@ -692,147 +831,161 @@ class MainWindow(QMainWindow):
     def _load_file(self, path: str):
         try:
             with open(path, "rb") as f:
-                self._file_data = f.read()
-            self._file_path = path
-            self._update_display()
+                file_data = f.read()
+
+            # 自动检测分辨率
+            width, height = self._auto_detect_resolution(len(file_data))
+
+            # 显示格式选择对话框（分辨率可编辑）
+            width, height, fmt, ok = self._show_format_dialog(width, height)
+            if not ok:
+                return
+
+            # 创建新标签页
+            tab = ImageTab(path, file_data, width, height, fmt)
+            name = os.path.basename(path)
+
+            # 如果已有同名标签，关闭旧的
+            for i in range(self.tab_widget.count()):
+                if self.tab_widget.tabText(i) == name:
+                    self.tab_widget.removeTab(i)
+                    break
+
+            index = self.tab_widget.addTab(tab, name)
+            self.tab_widget.setCurrentIndex(index)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Cannot open file:\n{str(e)}")
 
-    def _reload(self):
-        if self._file_path:
-            self._load_file(self._file_path)
-        elif self._file_data:
-            self._update_display()
+    def _auto_detect_resolution(self, file_size: int) -> tuple:
+        """根据文件大小自动检测分辨率"""
+        common_resolutions = [
+            (1920, 1080), (1920, 1088),  # 1088 is common for 2K content
+            (3840, 2160), (2560, 1440), (2560, 1080),
+            (1280, 720), (1920, 1200), (1600, 900), (1366, 768),
+            (1440, 900), (1680, 1050), (1280, 800), (1024, 768),
+            (640, 480), (320, 240), (800, 600)
+        ]
 
-    def _format_changed(self, index: int):
-        self._pixel_format = self.format_combo.currentData()
-        if self._file_data:
-            self._update_display()
+        for w, h in common_resolutions:
+            for multiplier in [1.5, 2, 3, 4]:  # NV12, RGB888, RGB565, XRGB8888
+                if w * h * int(multiplier) == file_size:
+                    return w, h
 
-    def _zoom_changed(self, btn: QPushButton):
-        zoom_text = btn.text()
-        if zoom_text == "1x":
-            self._zoom = 1.0
-        elif zoom_text == "2x":
-            self._zoom = 2.0
-        elif zoom_text == "4x":
-            self._zoom = 4.0
-        elif zoom_text == "8x":
-            self._zoom = 8.0
-        else:
-            self._zoom = 0
+        # 默认值
+        return 1920, 1080
 
-        if self._file_data:
-            self._update_display()
+    def _show_format_dialog(self, width: int, height: int) -> tuple:
+        """显示格式选择对话框，返回 (width, height, format, ok)"""
+        from PyQt6.QtWidgets import QDialog, QFormLayout
 
-    def _resolution_changed(self):
-        try:
-            self._width = int(self.width_edit.text())
-            self._height = int(self.height_edit.text())
-            if self._width <= 0 or self._height <= 0:
-                raise ValueError()
-        except ValueError:
-            QMessageBox.warning(self, "Warning", "Invalid resolution")
-            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Format")
+        dialog.setStyleSheet("""
+            QDialog { background-color: #2D2D30; }
+            QLabel { color: #CCCCCC; }
+            QLineEdit {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                border: 1px solid #555555;
+                padding: 4px;
+            }
+            QComboBox {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                border: 1px solid #555555;
+            }
+            QPushButton {
+                background-color: #007ACC;
+                color: white;
+                border: none;
+                padding: 5px 15px;
+                min-width: 70px;
+            }
+            QPushButton:hover {
+                background-color: #005A9E;
+            }
+            QPushButton[accessibleName="cancel"] {
+                background-color: #555555;
+            }
+            QPushButton[accessibleName="cancel"]:hover {
+                background-color: #666666;
+            }
+        """)
 
-        if self._file_data:
-            self._update_display()
+        layout = QFormLayout(dialog)
 
-    def _update_display(self):
-        if not self._file_data:
-            return
+        # 使用 QLineEdit 让用户可以编辑分辨率
+        width_edit = QLineEdit()
+        width_edit.setText(str(width))
+        width_edit.setPlaceholderText("Width in pixels")
+        height_edit = QLineEdit()
+        height_edit.setText(str(height))
+        height_edit.setPlaceholderText("Height in pixels")
+        layout.addRow("Width:", width_edit)
+        layout.addRow("Height:", height_edit)
 
-        try:
-            self._width = int(self.width_edit.text())
-            self._height = int(self.height_edit.text())
-        except ValueError:
-            return
+        combo = QComboBox()
+        for fmt in PixelFormat:
+            combo.addItem(fmt.value, fmt)
+        # 默认 NV12
+        idx = combo.findData(PixelFormat.NV12)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        layout.addRow("Format:", combo)
 
-        required_size = PixelDecoder.get_required_size(self._width, self._height, self._pixel_format)
-        if len(self._file_data) < required_size:
-            self.status_bar.showMessage(f"Warning: Insufficient file size (need {required_size}, got {len(self._file_data)})", 3000)
+        buttons = QWidget()
+        btn_layout = QHBoxLayout(buttons)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setAccessibleName("cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addRow(buttons)
 
-        try:
-            img = PixelDecoder.decode(self._file_data, self._width, self._height, self._pixel_format)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Decode failed:\n{str(e)}")
-            return
+        if dialog.exec():
+            try:
+                w = int(width_edit.text())
+                h = int(height_edit.text())
+                if w > 0 and h > 0:
+                    return w, h, combo.currentData(), True
+                else:
+                    QMessageBox.warning(self, "Invalid Resolution", "Width and Height must be positive integers.")
+                    return None, None, None, False
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "Width and Height must be valid integers.")
+                return None, None, None, False
+        return None, None, None, False
 
-        pixmap = QPixmap.fromImage(img)
+    def _close_tab(self, index: int):
+        self.tab_widget.removeTab(index)
 
-        if self._zoom > 0:
-            scaled_pixmap = pixmap.scaled(
-                int(self._width * self._zoom),
-                int(self._height * self._zoom),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.FastTransformation
-            )
-        else:
-            view_size = self.view.viewport().size()
-            scaled_pixmap = pixmap.scaled(
-                view_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.FastTransformation
-            )
-
-        self.scene.clear()
-        self.scene.addPixmap(scaled_pixmap)
-        self.view.setSceneRect(0, 0, scaled_pixmap.width(), scaled_pixmap.height())
-        self.view.setBackgroundBrush(QColor("#1E1E1E"))
-
-        self.file_path_label.setText(self._file_path if self._file_path else "No file")
-        self.resolution_label.setText(f" {self._width}x{self._height} ")
-        self.format_label.setText(f" {self._pixel_format.value} ")
-        self.zoom_label.setText(f" {self._zoom}x " if self._zoom > 0 else " Fit ")
-
-        # 更新 YUV 范围标签
-        yuv_range = PixelDecoder.get_yuv_range()
-        self.yuv_range_label.setText(f"Range: {yuv_range.value}")
+    def _close_current_tab(self):
+        if self.tab_widget.currentIndex() >= 0:
+            self._close_tab(self.tab_widget.currentIndex())
 
     def _fit_window(self):
-        self._zoom = 0
-        self.zoom_buttons["Fit"].setChecked(True)
-        if self._file_data:
-            self._update_display()
+        tab = self.tab_widget.currentWidget()
+        if tab:
+            for btn in tab.zoom_group.buttons():
+                if btn.text() == "Fit":
+                    btn.setChecked(True)
+                    break
+            tab.zoom = 0
+            tab._update_display()
 
     def _actual_size(self):
-        self._zoom = 1.0
-        self.zoom_buttons["1x"].setChecked(True)
-        if self._file_data:
-            self._update_display()
-
-    def _mouse_moved(self, x: int, y: int):
-        if not self._file_data:
-            return
-
-        scale_x = self._width / self.scene.sceneRect().width() if self.scene.sceneRect().width() > 0 else 1
-        scale_y = self._height / self.scene.sceneRect().height() if self.scene.sceneRect().height() > 0 else 1
-
-        img_x = int(x * scale_x)
-        img_y = int(y * scale_y)
-
-        if 0 <= img_x < self._width and 0 <= img_y < self._height:
-            self.position_label.setText(f" X: {img_x}, Y: {img_y} ")
-
-            if self.scene.items():
-                item = self.scene.items()[0]
-                if isinstance(item, QGraphicsPixmapItem):
-                    pixmap = item.pixmap()
-                    if not pixmap.isNull():
-                        img = pixmap.toImage()
-                        if 0 <= x < pixmap.width() and 0 <= y < pixmap.height():
-                            pixel = img.pixel(x, y)
-                            r = (pixel >> 16) & 0xFF
-                            g = (pixel >> 8) & 0xFF
-                            b = pixel & 0xFF
-                            self.color_label.setText(f" RGB: {r}, {g}, {b} ")
-        else:
-            self.position_label.setText("")
-            self.color_label.setText("")
-
-    def _mouse_left(self):
-        self.position_label.setText("")
-        self.color_label.setText("")
+        tab = self.tab_widget.currentWidget()
+        if tab:
+            for btn in tab.zoom_group.buttons():
+                if btn.text() == "1x":
+                    btn.setChecked(True)
+                    break
+            tab.zoom = 1.0
+            tab._update_display()
 
     def _show_about(self):
         numpy_status = "Enabled" if HAS_NUMPY else "Disabled (slower)"
@@ -842,7 +995,9 @@ class MainWindow(QMainWindow):
             "Raw Image Viewer\n"
             "Supports RGB888, RGB565, XRGB8888\n"
             "Supports NV12, NV21, NV16, NV61, NV24, NV42\n\n"
-            f"NumPy acceleration: {numpy_status}\n\n"
+            "Features:\n"
+            "- Multi-tab support (like 7yuv)\n"
+            f"- NumPy acceleration: {numpy_status}\n\n"
             "Shortcuts:\n"
             "Ctrl+O - Open file\n"
             "Ctrl+Wheel - Zoom"
