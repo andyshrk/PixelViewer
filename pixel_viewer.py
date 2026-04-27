@@ -7,8 +7,9 @@ PixelViewer - 原始图像查看器
 
 import sys
 import os
+import re
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     import numpy as np
@@ -136,10 +137,13 @@ class PixelDecoder:
         return PixelDecoder._yuv_range
 
     @staticmethod
-    def decode(data: bytes, width: int, height: int, fmt: PixelFormat) -> QImage:
-        """解码原始数据为 QImage"""
-        # 解码前自动检测 YUV 范围
-        if fmt.name.startswith('NV'):
+    def decode(data: bytes, width: int, height: int, fmt: PixelFormat,
+               auto_detect_range: bool = True) -> QImage:
+        """解码原始数据为 QImage
+        auto_detect_range: 是否在解码前自动检测 YUV 范围（手动选择 Range 时设为 False）
+        """
+        # 解码前自动检测 YUV 范围（仅当 auto_detect_range=True 且格式为 YUV 时）
+        if auto_detect_range and fmt.name.startswith('NV'):
             PixelDecoder._yuv_range = YuvRangeDetector.detect(data, width, height, fmt)
 
         if HAS_NUMPY:
@@ -543,6 +547,7 @@ class ImageTab(QWidget):
         self.height = height
         self.pixel_format = pixel_format
         self.zoom = 1.0
+        self._range_manually_set = False  # 标记用户是否手动设置过 Range
 
         self._setup_ui()
         self._on_zoom_changed("1x")
@@ -587,7 +592,6 @@ class ImageTab(QWidget):
         self.range_combo.addItem("Limited", YuvRange.LIMITED)
         self.range_combo.setFixedWidth(80)
         toolbar_layout.addWidget(self.range_combo)
-        self.range_combo.currentIndexChanged.connect(self._on_range_changed)
 
         toolbar_layout.addSpacing(16)
 
@@ -639,6 +643,9 @@ class ImageTab(QWidget):
         status_layout.addStretch()
         layout.addWidget(self.status_bar)
 
+        # 连接 Range 信号（确保 scene 已创建后再连接）
+        self.range_combo.currentIndexChanged.connect(self._on_range_changed)
+
     def _update_display(self):
         try:
             self.width = int(self.width_edit.text())
@@ -651,7 +658,10 @@ class ImageTab(QWidget):
             pass  # 显示警告但不阻止
 
         try:
-            img = PixelDecoder.decode(self.file_data, self.width, self.height, self.pixel_format)
+            # 如果用户手动设置过 Range，使用用户的选择；否则自动检测
+            auto_detect = not self._range_manually_set
+            img = PixelDecoder.decode(self.file_data, self.width, self.height, self.pixel_format,
+                                      auto_detect_range=auto_detect)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Decode failed:\n{str(e)}")
             return
@@ -702,6 +712,7 @@ class ImageTab(QWidget):
         self._update_display()
 
     def _on_range_changed(self, index):
+        self._range_manually_set = True  # 标记用户手动设置过
         data = self.range_combo.currentData()
         PixelDecoder._yuv_range = data
         self._update_display()
@@ -863,11 +874,18 @@ class MainWindow(QMainWindow):
             with open(path, "rb") as f:
                 file_data = f.read()
 
-            # 自动检测分辨率
-            width, height = self._auto_detect_resolution(len(file_data))
+            # 从文件名解析分辨率和格式
+            fname = os.path.basename(path)
+            fn_width, fn_height, fn_fmt = self._parse_filename(fname)
+
+            # 自动检测分辨率（如果文件名无法解析）
+            if fn_width and fn_height:
+                width, height = fn_width, fn_height
+            else:
+                width, height = self._auto_detect_resolution(len(file_data))
 
             # 显示格式选择对话框（分辨率可编辑）
-            width, height, fmt, ok = self._show_format_dialog(width, height)
+            width, height, fmt, ok = self._show_format_dialog(width, height, fn_fmt)
             if not ok:
                 return
 
@@ -887,6 +905,31 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Cannot open file:\n{str(e)}")
 
+    def _parse_filename(self, filename: str) -> Tuple[Optional[int], Optional[int], Optional[PixelFormat]]:
+        """从文件名解析分辨率和格式
+        支持格式如:
+          - wb_NV16_3840x2160_000.bin
+          - 3840x2160_NV24_valley.bin
+          - wb_NV12_960x544.bin
+          - test_1920x1080_rgb888.raw
+        """
+        name = os.path.splitext(filename)[0]
+
+        # 尝试匹配分辨率模式: 数字x数字 (如 3840x2160, 960x544)
+        res_pattern = r'(\d+)x(\d+)'
+        match = re.search(res_pattern, name, re.IGNORECASE)
+        width = int(match.group(1)) if match else None
+        height = int(match.group(2)) if match else None
+
+        # 尝试匹配格式
+        fmt = None
+        for format_name in PixelFormat._member_names_:
+            if format_name in name:
+                fmt = PixelFormat[format_name]
+                break
+
+        return width, height, fmt
+
     def _auto_detect_resolution(self, file_size: int) -> tuple:
         """根据文件大小自动检测分辨率"""
         common_resolutions = [
@@ -905,8 +948,10 @@ class MainWindow(QMainWindow):
         # 默认值
         return 1920, 1080
 
-    def _show_format_dialog(self, width: int, height: int) -> tuple:
-        """显示格式选择对话框，返回 (width, height, format, ok)"""
+    def _show_format_dialog(self, width: int, height: int, preset_fmt: Optional[PixelFormat] = None) -> tuple:
+        """显示格式选择对话框，返回 (width, height, format, ok)
+        preset_fmt: 从文件名解析出的预设格式
+        """
         from PyQt6.QtWidgets import QDialog, QFormLayout
 
         dialog = QDialog(self)
@@ -958,8 +1003,11 @@ class MainWindow(QMainWindow):
         combo = QComboBox()
         for fmt in PixelFormat:
             combo.addItem(fmt.value, fmt)
-        # 默认 NV12
-        idx = combo.findData(PixelFormat.NV12)
+        # 默认选中预设格式（从文件名解析），否则默认 NV12
+        if preset_fmt:
+            idx = combo.findData(preset_fmt)
+        else:
+            idx = combo.findData(PixelFormat.NV12)
         if idx >= 0:
             combo.setCurrentIndex(idx)
         layout.addRow("Format:", combo)
