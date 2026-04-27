@@ -912,14 +912,27 @@ class MainWindow(QMainWindow):
           - 3840x2160_NV24_valley.bin
           - wb_NV12_960x544.bin
           - test_1920x1080_rgb888.raw
+          - video3840_2160_NV12_localmain (分辨率: 3840x2160, 格式: NV12)
         """
         name = os.path.splitext(filename)[0]
+
+        width = None
+        height = None
 
         # 尝试匹配分辨率模式: 数字x数字 (如 3840x2160, 960x544)
         res_pattern = r'(\d+)x(\d+)'
         match = re.search(res_pattern, name, re.IGNORECASE)
-        width = int(match.group(1)) if match else None
-        height = int(match.group(2)) if match else None
+        if match:
+            width = int(match.group(1))
+            height = int(match.group(2))
+
+        # 尝试匹配分辨率模式: 数字_数字 (如 3840_2160)
+        if width is None:
+            res_pattern2 = r'(\d{3,4})_(\d{3,4})'
+            match2 = re.search(res_pattern2, name)
+            if match2:
+                width = int(match2.group(1))
+                height = int(match2.group(2))
 
         # 尝试匹配格式
         fmt = None
