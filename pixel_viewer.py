@@ -200,7 +200,7 @@ class PixelDecoder:
 
             if actual_h > 0:
                 rgb = arr[:actual_bytes].reshape(actual_h, width, 4)[:, :, :3].copy()
-                if fmt == PixelFormat.XBGR8888:
+                if fmt == PixelFormat.XRGB8888:
                     rgb = rgb[:, :, ::-1]
             else:
                 rgb = np.zeros((1, width, 3), dtype=np.uint8)
@@ -334,9 +334,9 @@ class PixelDecoder:
                     return img
                 pixel = data[idx] | (data[idx + 1] << 8)
                 if bgr:
-                    b = ((pixel & 0x001F) << 3)
+                    r = ((pixel & 0x001F) << 3)
                     g = ((pixel & 0x07E0) >> 3)
-                    r = ((pixel & 0xF800) >> 8)
+                    b = ((pixel & 0xF800) >> 8)
                 else:
                     r = ((pixel & 0xF800) >> 8)
                     g = ((pixel & 0x07E0) >> 3)
@@ -354,9 +354,9 @@ class PixelDecoder:
                 if idx + 3 >= len(data):
                     return img
                 if bgr:
-                    b, g, r = data[idx], data[idx + 1], data[idx + 2]
-                else:
                     r, g, b = data[idx], data[idx + 1], data[idx + 2]
+                else:
+                    r, g, b = data[idx + 2], data[idx + 1], data[idx]
                 img.setPixel(x, y, (r << 16) | (g << 8) | b)
         return img
 
