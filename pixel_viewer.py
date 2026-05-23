@@ -764,6 +764,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._last_dir = ""
         self._setup_ui()
         self._setup_connections()
 
@@ -863,10 +864,11 @@ class MainWindow(QMainWindow):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open File", "",
+            self, "Open File", self._last_dir,
             "All Files (*.*);;YUV Files (*.yuv;*.nv12;*.nv21);;Binary Files (*.bin)"
         )
         if path:
+            self._last_dir = os.path.dirname(path)
             self._load_file(path)
 
     def _load_file(self, path: str):
