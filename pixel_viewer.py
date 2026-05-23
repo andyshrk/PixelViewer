@@ -934,10 +934,11 @@ class MainWindow(QMainWindow):
                 width = int(match2.group(1))
                 height = int(match2.group(2))
 
-        # 尝试匹配格式
+        # 尝试匹配格式（ARGB/ABGR 视为 XRGB/XBGR）
         fmt = None
-        for format_name in PixelFormat._member_names_:
-            if format_name in name:
+        lookup_name = name.replace("ARGB", "XRGB").replace("ABGR", "XBGR")
+        for format_name in sorted(PixelFormat._member_names_, key=len, reverse=True):
+            if format_name in lookup_name:
                 fmt = PixelFormat[format_name]
                 break
 
