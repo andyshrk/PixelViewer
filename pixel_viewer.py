@@ -938,7 +938,7 @@ class MainWindow(QMainWindow):
 
         # 尝试匹配格式（ARGB/ABGR 视为 XRGB/XBGR）
         fmt = None
-        lookup_name = name.replace("ARGB", "XRGB").replace("ABGR", "XBGR").replace("RG16", "RGB565").replace("BG16", "BGR565")
+        lookup_name = name.replace("ARGB", "XRGB").replace("ABGR", "XBGR").replace("XR24", "XRGB8888").replace("XB24", "XBGR8888").replace("RG16", "RGB565").replace("BG16", "BGR565")
         for format_name in sorted(PixelFormat._member_names_, key=len, reverse=True):
             if format_name in lookup_name:
                 fmt = PixelFormat[format_name]
