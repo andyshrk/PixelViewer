@@ -23,7 +23,7 @@ try:
         QMenuBar, QMenu, QLabel, QLineEdit, QComboBox, QPushButton,
         QToolBar, QStatusBar, QFileDialog, QMessageBox,
         QButtonGroup, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-        QTabWidget, QSizePolicy
+        QTabWidget, QTabBar, QSizePolicy
     )
     from PyQt6.QtCore import Qt, QPoint, pyqtSignal
     from PyQt6.QtGui import (
@@ -803,7 +803,7 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background-color: #2D2D30;
                 color: #CCCCCC;
-                padding: 6px 12px;
+                padding: 6px 30px 6px 12px;
                 border: 1px solid #3F3F46;
             }
             QTabBar::tab:selected {
@@ -813,12 +813,51 @@ class MainWindow(QMainWindow):
             QTabBar::tab:hover:!selected {
                 background-color: #3F3F46;
             }
-            QTabBar::close-button {
-                image: none;
+            QScrollBar:vertical {
+                background-color: #1E1E1E;
+                width: 12px;
+                margin: 0;
             }
-            QTabBar::close-button:hover {
-                background-color: #555555;
-                border-radius: 2px;
+            QScrollBar::handle:vertical {
+                background-color: #5F5F63;
+                min-height: 30px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #7F7F83;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background-color: #007ACC;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QScrollBar:horizontal {
+                background-color: #1E1E1E;
+                height: 12px;
+                margin: 0;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #5F5F63;
+                min-width: 30px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #7F7F83;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                background-color: #007ACC;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
             }
         """)
 
@@ -903,6 +942,28 @@ class MainWindow(QMainWindow):
 
             index = self.tab_widget.addTab(tab, name)
             self.tab_widget.setCurrentIndex(index)
+
+            # 用自定义 QPushButton 替换默认关闭按钮
+            close_btn = QPushButton("✕")
+            close_btn.setFixedSize(20, 20)
+            close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            close_btn.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    color: #AAAAAA;
+                    border: none;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background: #C14545;
+                    color: white;
+                    border-radius: 3px;
+                }
+            """)
+            close_btn.clicked.connect(lambda checked, idx=index: self._close_tab(idx))
+            self.tab_widget.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, close_btn)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Cannot open file:\n{str(e)}")
