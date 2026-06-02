@@ -157,21 +157,20 @@ class PixelDecoder:
         arr = np.frombuffer(data, dtype=np.uint8)
 
         if fmt in [PixelFormat.RGB888, PixelFormat.BGR888]:
-            expected = width * height * 3
-            actual_size = min(len(arr), expected)
-            actual_h = actual_size // (width * 3)
-            actual_w = width
-            actual_bytes = actual_h * actual_w * 3
+            row_bytes = width * 3
+            row_stride = row_bytes
+            actual_h = min(height, len(arr) // row_stride) if row_stride > 0 else 0
 
             if actual_h > 0:
-                rgb = arr[:actual_bytes].reshape(actual_h, actual_w, 3).copy()
+                rows = arr[:actual_h * row_stride].reshape(actual_h, row_stride)
+                rgb = rows[:, :row_bytes].reshape(actual_h, width, 3).copy()
                 if fmt == PixelFormat.BGR888:
-                    rgb = rgb[:, :, ::-1]
+                    rgb = rgb[:, :, ::-1].copy()
             else:
                 rgb = np.zeros((1, width, 3), dtype=np.uint8)
                 actual_h = 1
 
-            img = QImage(rgb, width, actual_h, width * 3, QImage.Format.Format_RGB888)
+            img = QImage(rgb.reshape(-1), width, actual_h, width * 3, QImage.Format.Format_RGB888)
             return img.copy()
 
         elif fmt in [PixelFormat.RGB565, PixelFormat.BGR565]:
@@ -195,13 +194,15 @@ class PixelDecoder:
             return img.copy()
 
         elif fmt in [PixelFormat.XRGB8888, PixelFormat.XBGR8888]:
-            actual_h = min(height, len(arr) // (width * 4))
-            actual_bytes = actual_h * width * 4
+            row_bytes = width * 4
+            row_stride = row_bytes
+            actual_h = min(height, len(arr) // row_stride) if row_stride > 0 else 0
 
             if actual_h > 0:
-                rgb = arr[:actual_bytes].reshape(actual_h, width, 4)[:, :, :3].copy()
+                rows = arr[:actual_h * row_stride].reshape(actual_h, row_stride)
+                rgb = rows[:, :row_bytes].reshape(actual_h, width, 4)[:, :, :3].copy()
                 if fmt == PixelFormat.XRGB8888:
-                    rgb = rgb[:, :, ::-1]
+                    rgb = rgb[:, :, ::-1].copy()
             else:
                 rgb = np.zeros((1, width, 3), dtype=np.uint8)
                 actual_h = 1
@@ -311,9 +312,10 @@ class PixelDecoder:
     def _decode_rgb888(data: bytes, width: int, height: int, bgr: bool) -> QImage:
         """解码 RGB888/BGR888"""
         img = QImage(width, height, QImage.Format.Format_RGB888)
+        row_stride = width * 3
         for y in range(height):
             for x in range(width):
-                idx = (y * width + x) * 3
+                idx = y * row_stride + x * 3
                 if idx + 2 >= len(data):
                     return img
                 if bgr:
@@ -348,9 +350,10 @@ class PixelDecoder:
     def _decode_xrgb8888(data: bytes, width: int, height: int, bgr: bool) -> QImage:
         """解码 XRGB8888/XBGR8888"""
         img = QImage(width, height, QImage.Format.Format_RGB888)
+        row_stride = width * 4
         for y in range(height):
             for x in range(width):
-                idx = (y * width + x) * 4
+                idx = y * row_stride + x * 4
                 if idx + 3 >= len(data):
                     return img
                 if bgr:
