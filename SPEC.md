@@ -50,6 +50,8 @@
 | BGR565 | 16位 BGR (5-6-5) | 2 |
 | XRGB8888 | 32位 ARGB (忽略Alpha) | 4 |
 | XBGR8888 | 32位 ABGR (忽略Alpha) | 4 |
+| AR30 / ARGB2101010 | 32位 ARGB (2-10-10-10，忽略Alpha) | 4 |
+| AB30 / ABGR2101010 | 32位 ABGR (2-10-10-10，忽略Alpha) | 4 |
 
 #### YUV 系列
 | 格式 | 描述 | 采样 |

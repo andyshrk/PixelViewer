@@ -44,6 +44,8 @@ class PixelFormat(Enum):
     BGR565 = "BGR565"
     XRGB8888 = "XRGB8888"
     XBGR8888 = "XBGR8888"
+    AR30 = "AR30"
+    AB30 = "AB30"
     NV12 = "NV12"
     NV21 = "NV21"
     NV16 = "NV16"
@@ -210,6 +212,30 @@ class PixelDecoder:
             img = QImage(rgb.reshape(-1), width, actual_h, width * 3, QImage.Format.Format_RGB888)
             return img.copy()
 
+        elif fmt in [PixelFormat.AR30, PixelFormat.AB30]:
+            actual_h = min(height, len(arr) // (width * 4))
+            actual_bytes = actual_h * width * 4
+
+            if actual_h > 0:
+                pixels = arr[:actual_bytes].view('<u4').reshape(actual_h, width)
+                low = pixels & 0x3FF
+                g10 = (pixels >> 10) & 0x3FF
+                high = (pixels >> 20) & 0x3FF
+                if fmt == PixelFormat.AR30:
+                    r10, b10 = high, low
+                else:
+                    r10, b10 = low, high
+                r = ((r10 * 255 + 511) // 1023).astype(np.uint8)
+                g = ((g10 * 255 + 511) // 1023).astype(np.uint8)
+                b = ((b10 * 255 + 511) // 1023).astype(np.uint8)
+                rgb = np.stack([r, g, b], axis=2)
+            else:
+                rgb = np.zeros((1, width, 3), dtype=np.uint8)
+                actual_h = 1
+
+            img = QImage(rgb.reshape(-1), width, actual_h, width * 3, QImage.Format.Format_RGB888)
+            return img.copy()
+
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21, PixelFormat.NV16, PixelFormat.NV61,
                      PixelFormat.NV24, PixelFormat.NV42]:
             y_size = width * height
@@ -300,6 +326,8 @@ class PixelDecoder:
             return PixelDecoder._decode_rgb565(data, width, height, fmt == PixelFormat.BGR565)
         elif fmt in [PixelFormat.XRGB8888, PixelFormat.XBGR8888]:
             return PixelDecoder._decode_xrgb8888(data, width, height, fmt == PixelFormat.XBGR8888)
+        elif fmt in [PixelFormat.AR30, PixelFormat.AB30]:
+            return PixelDecoder._decode_rgb2101010(data, width, height, fmt == PixelFormat.AB30)
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21]:
             return PixelDecoder._decode_nv12(data, width, height, fmt == PixelFormat.NV21)
         elif fmt in [PixelFormat.NV16, PixelFormat.NV61]:
@@ -360,6 +388,31 @@ class PixelDecoder:
                     r, g, b = data[idx], data[idx + 1], data[idx + 2]
                 else:
                     r, g, b = data[idx + 2], data[idx + 1], data[idx]
+                img.setPixel(x, y, (r << 16) | (g << 8) | b)
+        return img
+
+    @staticmethod
+    def _decode_rgb2101010(data: bytes, width: int, height: int, abgr: bool) -> QImage:
+        """Decode DRM ARGB2101010/ABGR2101010 and ignore the alpha bits."""
+        img = QImage(width, height, QImage.Format.Format_RGB888)
+        row_stride = width * 4
+        for y in range(height):
+            for x in range(width):
+                idx = y * row_stride + x * 4
+                if idx + 3 >= len(data):
+                    return img
+                pixel = (data[idx] | (data[idx + 1] << 8) |
+                         (data[idx + 2] << 16) | (data[idx + 3] << 24))
+                low = pixel & 0x3FF
+                g10 = (pixel >> 10) & 0x3FF
+                high = (pixel >> 20) & 0x3FF
+                if abgr:
+                    r10, b10 = low, high
+                else:
+                    r10, b10 = high, low
+                r = (r10 * 255 + 511) // 1023
+                g = (g10 * 255 + 511) // 1023
+                b = (b10 * 255 + 511) // 1023
                 img.setPixel(x, y, (r << 16) | (g << 8) | b)
         return img
 
@@ -493,7 +546,8 @@ class PixelDecoder:
             return size * 3
         elif fmt in [PixelFormat.RGB565, PixelFormat.BGR565]:
             return size * 2
-        elif fmt in [PixelFormat.XRGB8888, PixelFormat.XBGR8888]:
+        elif fmt in [PixelFormat.XRGB8888, PixelFormat.XBGR8888,
+                     PixelFormat.AR30, PixelFormat.AB30]:
             return size * 4
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21]:
             return int(size * 1.5)
@@ -1002,7 +1056,16 @@ class MainWindow(QMainWindow):
 
         # 尝试匹配格式（ARGB/ABGR 视为 XRGB/XBGR）
         fmt = None
-        lookup_name = name.replace("ARGB", "XRGB").replace("ABGR", "XBGR").replace("XR24", "XRGB8888").replace("XB24", "XBGR8888").replace("RG16", "RGB565").replace("BG16", "BGR565").replace("BG24", "BGR888")
+        lookup_name = (name.upper()
+                       .replace("ARGB2101010", "AR30")
+                       .replace("ABGR2101010", "AB30")
+                       .replace("ARGB", "XRGB")
+                       .replace("ABGR", "XBGR")
+                       .replace("XR24", "XRGB8888")
+                       .replace("XB24", "XBGR8888")
+                       .replace("RG16", "RGB565")
+                       .replace("BG16", "BGR565")
+                       .replace("BG24", "BGR888"))
         for format_name in sorted(PixelFormat._member_names_, key=len, reverse=True):
             if format_name in lookup_name:
                 fmt = PixelFormat[format_name]
