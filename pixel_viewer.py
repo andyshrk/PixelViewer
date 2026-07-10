@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PixelViewer - 原始图像查看器
-支持 RGB888, RGB565, XRGB8888, NV12, NV21, NV16, NV61, NV24, NV42 等格式
+支持 RGB888, RGB565, XRGB8888, NV12, NV15, NV21, NV16, NV61, NV24, NV42 等格式
 支持多标签页，类似 7yuv
 """
 
@@ -47,6 +47,7 @@ class PixelFormat(Enum):
     AR30 = "AR30"
     AB30 = "AB30"
     NV12 = "NV12"
+    NV15 = "NV15"
     NV21 = "NV21"
     NV16 = "NV16"
     NV61 = "NV61"
@@ -137,6 +138,41 @@ class PixelDecoder:
     def get_yuv_range() -> YuvRange:
         """获取当前 YUV 色彩范围"""
         return PixelDecoder._yuv_range
+
+    @staticmethod
+    def _unpack_10bit_rows(data: bytes, sample_width: int, height: int,
+                           offset: int = 0) -> tuple:
+        """Unpack complete rows from a DRM 10-bit packed plane."""
+        row_bytes = ((sample_width + 3) // 4) * 5
+        actual_h = min(height, max(0, len(data) - offset) // row_bytes) if row_bytes > 0 else 0
+        samples = []
+        for y in range(actual_h):
+            row_offset = offset + y * row_bytes
+            row = []
+            for group_x in range(0, sample_width, 4):
+                group_offset = row_offset + (group_x // 4) * 5
+                group = int.from_bytes(data[group_offset:group_offset + 5], "little")
+                for component in range(4):
+                    row.append((group >> (component * 10)) & 0x3FF)
+            samples.extend(row[:sample_width])
+        return samples, actual_h
+
+    @staticmethod
+    def _unpack_10bit_rows_numpy(arr, sample_width: int, height: int, offset: int = 0):
+        """NumPy version of DRM packed 10-bit row unpacking."""
+        row_bytes = ((sample_width + 3) // 4) * 5
+        actual_h = min(height, max(0, len(arr) - offset) // row_bytes) if row_bytes > 0 else 0
+        if actual_h == 0:
+            return np.empty((0, sample_width), dtype=np.uint16)
+
+        groups = arr[offset:offset + actual_h * row_bytes].reshape(actual_h, -1, 5).astype(np.uint16)
+        unpacked = np.stack([
+            groups[:, :, 0] | ((groups[:, :, 1] & 0x03) << 8),
+            (groups[:, :, 1] >> 2) | ((groups[:, :, 2] & 0x0F) << 6),
+            (groups[:, :, 2] >> 4) | ((groups[:, :, 3] & 0x3F) << 4),
+            (groups[:, :, 3] >> 6) | (groups[:, :, 4] << 2),
+        ], axis=2).reshape(actual_h, -1)
+        return unpacked[:, :sample_width]
 
     @staticmethod
     def decode(data: bytes, width: int, height: int, fmt: PixelFormat,
@@ -236,6 +272,48 @@ class PixelDecoder:
             img = QImage(rgb.reshape(-1), width, actual_h, width * 3, QImage.Format.Format_RGB888)
             return img.copy()
 
+        elif fmt == PixelFormat.NV15:
+            y_row_bytes = ((width + 3) // 4) * 5
+            y10 = PixelDecoder._unpack_10bit_rows_numpy(arr, width, height)
+            actual_h = y10.shape[0]
+            if actual_h == 0:
+                return QImage(width, height, QImage.Format.Format_RGB888)
+
+            uv_pairs = (width + 1) // 2
+            uv_sample_width = uv_pairs * 2
+            uv10 = PixelDecoder._unpack_10bit_rows_numpy(
+                arr, uv_sample_width, (height + 1) // 2, y_row_bytes * height)
+
+            y = np.minimum((y10.astype(np.uint16) + 2) >> 2, 255).astype(np.float32)
+            u = np.full((actual_h, width), 128, dtype=np.float32)
+            v = np.full((actual_h, width), 128, dtype=np.float32)
+            if uv10.shape[0] > 0:
+                uv = np.minimum((uv10 + 2) >> 2, 255).astype(np.float32).reshape(
+                    uv10.shape[0], uv_pairs, 2)
+                expanded_u = np.repeat(np.repeat(uv[:, :, 0], 2, axis=0), 2, axis=1)
+                expanded_v = np.repeat(np.repeat(uv[:, :, 1], 2, axis=0), 2, axis=1)
+                covered_h = min(actual_h, expanded_u.shape[0])
+                u[:covered_h] = expanded_u[:covered_h, :width]
+                v[:covered_h] = expanded_v[:covered_h, :width]
+
+            if PixelDecoder._yuv_range == YuvRange.FULL:
+                u_f = u - 128
+                v_f = v - 128
+                r = np.clip(y + 1.402 * v_f, 0, 255).astype(np.uint8)
+                g = np.clip(y - 0.344 * u_f - 0.714 * v_f, 0, 255).astype(np.uint8)
+                b = np.clip(y + 1.772 * u_f, 0, 255).astype(np.uint8)
+            else:
+                c = y - 16
+                d = u - 128
+                e = v - 128
+                r = np.clip(1.164 * c + 1.596 * e + 128, 0, 255).astype(np.uint8)
+                g = np.clip(1.164 * c - 0.392 * d - 0.813 * e + 128, 0, 255).astype(np.uint8)
+                b = np.clip(1.164 * c + 2.017 * d + 128, 0, 255).astype(np.uint8)
+
+            rgb = np.stack([r, g, b], axis=2).reshape(-1)
+            img = QImage(rgb, width, actual_h, width * 3, QImage.Format.Format_RGB888)
+            return img.copy()
+
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21, PixelFormat.NV16, PixelFormat.NV61,
                      PixelFormat.NV24, PixelFormat.NV42]:
             y_size = width * height
@@ -328,6 +406,8 @@ class PixelDecoder:
             return PixelDecoder._decode_xrgb8888(data, width, height, fmt == PixelFormat.XBGR8888)
         elif fmt in [PixelFormat.AR30, PixelFormat.AB30]:
             return PixelDecoder._decode_rgb2101010(data, width, height, fmt == PixelFormat.AB30)
+        elif fmt == PixelFormat.NV15:
+            return PixelDecoder._decode_nv15(data, width, height)
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21]:
             return PixelDecoder._decode_nv12(data, width, height, fmt == PixelFormat.NV21)
         elif fmt in [PixelFormat.NV16, PixelFormat.NV61]:
@@ -459,6 +539,47 @@ class PixelDecoder:
         return img
 
     @staticmethod
+    def _decode_nv15(data: bytes, width: int, height: int) -> QImage:
+        """Decode DRM_FORMAT_NV15 (packed 10-bit YUV 4:2:0, interleaved UV)."""
+        img = QImage(width, height, QImage.Format.Format_RGB888)
+        y_row_bytes = ((width + 3) // 4) * 5
+        y_values, actual_h = PixelDecoder._unpack_10bit_rows(data, width, height)
+        if actual_h == 0:
+            return img
+
+        uv_pairs = (width + 1) // 2
+        uv_values, actual_uv_h = PixelDecoder._unpack_10bit_rows(
+            data, uv_pairs * 2, (height + 1) // 2, y_row_bytes * height)
+
+        for y in range(actual_h):
+            for x in range(width):
+                y_val = min((y_values[y * width + x] + 2) >> 2, 255)
+                uv_y = y // 2
+                uv_x = x // 2
+                if uv_y < actual_uv_h:
+                    uv_idx = uv_y * uv_pairs * 2 + uv_x * 2
+                    u_val = min((uv_values[uv_idx] + 2) >> 2, 255)
+                    v_val = min((uv_values[uv_idx + 1] + 2) >> 2, 255)
+                else:
+                    u_val = 128
+                    v_val = 128
+
+                if PixelDecoder._yuv_range == YuvRange.FULL:
+                    r = int(max(0, min(255, y_val + 1.402 * (v_val - 128))))
+                    g = int(max(0, min(255, y_val - 0.344 * (u_val - 128) - 0.714 * (v_val - 128))))
+                    b = int(max(0, min(255, y_val + 1.772 * (u_val - 128))))
+                else:
+                    c = y_val - 16
+                    d = u_val - 128
+                    e = v_val - 128
+                    r = int(max(0, min(255, 1.164 * c + 1.596 * e + 128)))
+                    g = int(max(0, min(255, 1.164 * c - 0.392 * d - 0.813 * e + 128)))
+                    b = int(max(0, min(255, 1.164 * c + 2.017 * d + 128)))
+
+                img.setPixel(x, y, (r << 16) | (g << 8) | b)
+        return img
+
+    @staticmethod
     def _decode_nv16(data: bytes, width: int, height: int, vu_order: bool) -> QImage:
         """解码 NV16/NV61 (YUV 4:2:2)"""
         img = QImage(width, height, QImage.Format.Format_RGB888)
@@ -551,6 +672,11 @@ class PixelDecoder:
             return size * 4
         elif fmt in [PixelFormat.NV12, PixelFormat.NV21]:
             return int(size * 1.5)
+        elif fmt == PixelFormat.NV15:
+            y_row_bytes = ((width + 3) // 4) * 5
+            uv_sample_width = ((width + 1) // 2) * 2
+            uv_row_bytes = ((uv_sample_width + 3) // 4) * 5
+            return y_row_bytes * height + uv_row_bytes * ((height + 1) // 2)
         elif fmt in [PixelFormat.NV16, PixelFormat.NV61]:
             return size * 2
         elif fmt in [PixelFormat.NV24, PixelFormat.NV42]:
@@ -961,7 +1087,7 @@ class MainWindow(QMainWindow):
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open File", self._last_dir,
-            "All Files (*.*);;YUV Files (*.yuv;*.nv12;*.nv21);;Binary Files (*.bin)"
+            "All Files (*.*);;YUV Files (*.yuv;*.nv12;*.nv15;*.nv21);;Binary Files (*.bin)"
         )
         if path:
             self._last_dir = os.path.dirname(path)
@@ -1084,8 +1210,8 @@ class MainWindow(QMainWindow):
         ]
 
         for w, h in common_resolutions:
-            for multiplier in [1.5, 2, 3, 4]:  # NV12, RGB888, RGB565, XRGB8888
-                if w * h * int(multiplier) == file_size:
+            for multiplier in [1.5, 1.875, 2, 3, 4]:
+                if int(w * h * multiplier) == file_size:
                     return w, h
 
         # 默认值
@@ -1215,7 +1341,7 @@ class MainWindow(QMainWindow):
             "PixelViewer v1.0\n\n"
             "Raw Image Viewer\n"
             "Supports RGB888, RGB565, XRGB8888\n"
-            "Supports NV12, NV21, NV16, NV61, NV24, NV42\n\n"
+            "Supports NV12, NV15, NV21, NV16, NV61, NV24, NV42\n\n"
             "Features:\n"
             "- Multi-tab support (like 7yuv)\n"
             f"- NumPy acceleration: {numpy_status}\n\n"

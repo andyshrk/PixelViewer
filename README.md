@@ -4,7 +4,7 @@ A Windows desktop application for viewing raw YUV/RGB image files. Supports mult
 
 ## Features
 
-- **Multiple pixel formats**: RGB888, BGR888, RGB565, BGR565, XRGB8888, XBGR8888, AR30 (ARGB2101010), AB30 (ABGR2101010), NV12, NV21, NV16, NV61, NV24, NV42
+- **Multiple pixel formats**: RGB888, BGR888, RGB565, BGR565, XRGB8888, XBGR8888, AR30 (ARGB2101010), AB30 (ABGR2101010), NV12, NV15, NV21, NV16, NV61, NV24, NV42
 - **Multi-tab support**: Open multiple files simultaneously
 - **Auto YUV range detection**: Automatically detects Full or Limited range for YUV formats
 - **Manual YUV range override**: Switch between Full/Limited range manually
@@ -44,6 +44,7 @@ python pixel_viewer.py
 | Format | Chroma Sampling | UV Plane Size | UV Upsampling |
 |--------|----------------|---------------|---------------|
 | NV12   | 4:2:0          | (H/2) x (W/2)| 2x vertical + 2x horizontal |
+| NV15   | 4:2:0, 10-bit packed | (H/2) x (W/2) | 2x vertical + 2x horizontal |
 | NV21   | 4:2:0 (VU)     | (H/2) x (W/2)| 2x vertical + 2x horizontal |
 | NV16   | 4:2:2          | H x (W/2)    | 2x horizontal only |
 | NV61   | 4:2:2 (VU)     | H x (W/2)    | 2x horizontal only |
