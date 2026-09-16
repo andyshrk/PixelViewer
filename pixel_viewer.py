@@ -1191,8 +1191,11 @@ class MainWindow(QMainWindow):
                        .replace("ABGR", "XBGR")
                        .replace("XR24", "XRGB8888")
                        .replace("XB24", "XBGR8888")
+                       .replace("AR24", "XRGB8888")
+                       .replace("AB24", "XBGR8888")
                        .replace("RG16", "RGB565")
                        .replace("BG16", "BGR565")
+                       .replace("RG24", "RGB888")
                        .replace("BG24", "BGR888"))
         for format_name in sorted(PixelFormat._member_names_, key=len, reverse=True):
             if format_name in lookup_name:
