@@ -202,7 +202,8 @@ class PixelDecoder:
             if actual_h > 0:
                 rows = arr[:actual_h * row_stride].reshape(actual_h, row_stride)
                 rgb = rows[:, :row_bytes].reshape(actual_h, width, 3).copy()
-                if fmt == PixelFormat.BGR888:
+                # Little-endian RGB888 stores B, G, R; BGR888 stores R, G, B.
+                if fmt == PixelFormat.RGB888:
                     rgb = rgb[:, :, ::-1].copy()
             else:
                 rgb = np.zeros((1, width, 3), dtype=np.uint8)
@@ -426,7 +427,8 @@ class PixelDecoder:
                 idx = y * row_stride + x * 3
                 if idx + 2 >= len(data):
                     return img
-                if bgr:
+                # Little-endian RGB888 stores B, G, R; BGR888 stores R, G, B.
+                if not bgr:
                     r, g, b = data[idx + 2], data[idx + 1], data[idx]
                 else:
                     r, g, b = data[idx], data[idx + 1], data[idx + 2]
